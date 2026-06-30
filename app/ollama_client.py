@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 from app.config import AppSettings
@@ -35,6 +37,23 @@ class OllamaClient:
         )
         resp.raise_for_status()
         return resp.json().get("response", "").strip()
+
+    async def chat_json(self, prompt: str) -> dict:
+        """Generate with Ollama's JSON mode; returns a parsed dict.
+        The caller must include the schema/keys it expects in the prompt."""
+        resp = await self._client.post(
+            f"{self._settings.ollama_base_url}/api/generate",
+            json={
+                "model": self._settings.chat_model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": 0.1},
+            },
+        )
+        resp.raise_for_status()
+        text = resp.json().get("response", "").strip()
+        return json.loads(text) if text else {}
 
     async def aclose(self) -> None:
         await self._client.aclose()

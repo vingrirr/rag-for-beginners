@@ -84,29 +84,34 @@ class VectorStore:
             )
             await conn.commit()
 
-    async def vector_search(self, query_embedding: list[float], k: int) -> list[RetrievedChunk]:
+    async def vector_search(
+        self,
+        query_embedding: list[float],
+        k: int,
+        min_score: float = 0.0,
+    ) -> list[RetrievedChunk]:
         sql = """
             SELECT c.post_id, c.content, c.kind, p.title, p.url,
-                   1 - (c.embedding <=> %s::vector) AS score
+                   1 - (c.embedding <=> %s::vector) AS score,
+                   c.embedding
             FROM chunks c
             JOIN posts p ON p.id = c.post_id
+            WHERE 1 - (c.embedding <=> %s::vector) >= %s
             ORDER BY c.embedding <=> %s::vector
             LIMIT %s
         """
         async with self._connection() as conn, conn.cursor() as cur:
-            await cur.execute(sql, (query_embedding, query_embedding, k))
-            rows = await cur.fetchall()
-        return [
-            RetrievedChunk(
-                post_id=r[0], content=r[1], kind=r[2], title=r[3], url=r[4], score=float(r[5])
+            await cur.execute(
+                sql, (query_embedding, query_embedding, min_score, query_embedding, k)
             )
-            for r in rows
-        ]
+            rows = await cur.fetchall()
+        return [_row_to_chunk(r, embedding_idx=6) for r in rows]
 
     async def keyword_search(self, query_text: str, k: int) -> list[RetrievedChunk]:
         sql = """
             SELECT c.post_id, c.content, c.kind, p.title, p.url,
-                   ts_rank_cd(c.content_tsv, plainto_tsquery('english', %s)) AS score
+                   ts_rank_cd(c.content_tsv, plainto_tsquery('english', %s)) AS score,
+                   c.embedding
             FROM chunks c
             JOIN posts p ON p.id = c.post_id
             WHERE c.content_tsv @@ plainto_tsquery('english', %s)
@@ -116,12 +121,7 @@ class VectorStore:
         async with self._connection() as conn, conn.cursor() as cur:
             await cur.execute(sql, (query_text, query_text, k))
             rows = await cur.fetchall()
-        return [
-            RetrievedChunk(
-                post_id=r[0], content=r[1], kind=r[2], title=r[3], url=r[4], score=float(r[5])
-            )
-            for r in rows
-        ]
+        return [_row_to_chunk(r, embedding_idx=6) for r in rows]
 
     async def hybrid_search(
         self,
@@ -129,9 +129,10 @@ class VectorStore:
         query_text: str,
         k: int,
         rrf_k: int = 60,
+        min_score: float = 0.0,
     ) -> list[RetrievedChunk]:
         """Vector + BM25 fused with Reciprocal Rank Fusion: score = sum(1/(rrf_k+rank))."""
-        vector_hits = await self.vector_search(query_embedding, k)
+        vector_hits = await self.vector_search(query_embedding, k, min_score=min_score)
         keyword_hits = await self.keyword_search(query_text, k)
 
         scores: dict[tuple[str, str], float] = defaultdict(float)
@@ -157,3 +158,20 @@ class VectorStore:
     def _connection(self):
         assert self._pool is not None, "VectorStore.open() must be called first"
         return self._pool.connection()
+
+
+def _row_to_chunk(row, *, embedding_idx: int) -> RetrievedChunk:
+    """Build a RetrievedChunk from a SELECT row. The embedding column comes
+    back as a numpy array (via pgvector); coerce to plain list[float] so the
+    object round-trips cleanly through Pydantic and JSON."""
+    raw_embedding = row[embedding_idx]
+    embedding = [float(x) for x in raw_embedding] if raw_embedding is not None else None
+    return RetrievedChunk(
+        post_id=row[0],
+        content=row[1],
+        kind=row[2],
+        title=row[3],
+        url=row[4],
+        score=float(row[5]),
+        embedding=embedding,
+    )

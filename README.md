@@ -71,17 +71,30 @@ a retrieval problem or a generation problem.
 
 ## Retrieval pipeline
 
-`QueryService.retrieve` is a composable pipeline; toggles in `.env`:
+`QueryService.retrieve` is a composable pipeline. The stages run in this order:
+
+```
+embed → [multi-query expand] → hybrid/vector retrieve
+      → [min-score filter] → [cross-encoder rerank] → [MMR] → top-k → generate
+```
+
+Every stage in brackets is feature-flagged in `.env`:
 
 | Setting | What it does |
 | --- | --- |
 | `USE_HYBRID=true` | Vector + BM25 (Postgres full-text) fused with RRF |
 | `USE_HYBRID=false` | Pure cosine-similarity vector search |
-| `USE_RERANKER=true` | Add a local cross-encoder rerank after retrieval |
-| `RETRIEVE_K=20` | Candidates fetched before rerank |
+| `USE_MULTI_QUERY=true` | LLM rewrites the question into `MULTI_QUERY_COUNT` variants, retrieves for each, RRF-fuses |
+| `MIN_SCORE=0.3` | Drops vector candidates below this cosine score. `0.0` ≈ off |
+| `USE_RERANKER=true` | Local cross-encoder rerank (`RERANKER_MODEL`) on the candidates |
+| `USE_MMR=true` | Diversity-aware final selection (`MMR_LAMBDA` 0..1; 1=relevance, 0=diversity) |
+| `RETRIEVE_K=20` | Candidates fetched per query before rerank/MMR |
 | `TOP_K=5` | Chunks finally passed to the LLM |
 
-For "wrong articles" retrieval bugs, hybrid + reranker is the biggest lever.
+For "wrong articles" retrieval bugs, the highest-ROI levers are usually
+`USE_HYBRID=true` (already on), then `USE_MULTI_QUERY=true`, then
+`USE_RERANKER=true`. `USE_MMR=true` helps when the final top-k are all
+near-duplicates from the same paragraph.
 
 ## Vector dimension
 

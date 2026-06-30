@@ -51,3 +51,6 @@ class RetrievedChunk(BaseModel):
     title: str
     url: str | None
     score: float
+    # Carried through retrieval so MMR (and any other diversity / clustering
+    # step) can run without a second round-trip to the DB or Ollama.
+    embedding: list[float] | None = None
